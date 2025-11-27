@@ -66,9 +66,20 @@ export default function ManagerDashboard() {
   // Filtri timesheet
   const [filterEmployee, setFilterEmployee] = useState<number | ''>('');
   const [filterProject, setFilterProject] = useState<number | ''>('');
-  const [filterAnno, setFilterAnno] = useState(new Date().getFullYear());
-  const [filterMese, setFilterMese] = useState(new Date().getMonth() + 1);
+  const [filterAnno, setFilterAnno] = useState<number | ''>(''); // Vuoto di default per mostrare tutti gli anni
+  const [filterMese, setFilterMese] = useState<number | ''>(''); // Vuoto di default per mostrare tutti i mesi
   const [filterStato, setFilterStato] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
+
+  // Stato per modali di conferma
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [confirmModalConfig, setConfirmModalConfig] = useState<{
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    confirmText?: string;
+    cancelText?: string;
+    confirmButtonClass?: string;
+  } | null>(null);
   
   // Modals
   const [showProjectModal, setShowProjectModal] = useState(false);
@@ -117,17 +128,15 @@ export default function ManagerDashboard() {
       const filters: any = {};
       if (filterEmployee) filters.employeeId = Number(filterEmployee);
       if (filterProject) filters.projectId = Number(filterProject);
-      if (filterAnno) filters.anno = filterAnno;
-      if (filterMese) filters.mese = filterMese;
+      // Rimuovi i filtri per anno e mese di default per mostrare tutte le settimane
+      // L'utente può ancora filtrare manualmente se necessario
+      if (filterAnno && filterAnno > 0) filters.anno = filterAnno;
+      if (filterMese && filterMese > 0) filters.mese = filterMese;
       
       const res = await getTimesheets(filters);
-      let filtered = res.timesheets;
-      
-      if (filterStato !== 'all') {
-        filtered = filtered.filter(ts => ts.stato === filterStato);
-      }
-      
-      setTimesheets(filtered);
+      // NON filtrare per stato qui - lasciamo che groupTimesheetsByWeek gestisca il filtro
+      // Questo permette di vedere tutte le settimane e filtrare dopo
+      setTimesheets(res.timesheets);
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message });
     }
@@ -162,14 +171,25 @@ export default function ManagerDashboard() {
   };
 
   const handleDeleteProject = async (id: number) => {
-    if (!confirm('Sei sicuro di voler eliminare questo progetto?')) return;
-    try {
-      await deleteProject(id);
-      setMessage({ type: 'success', text: 'Progetto eliminato!' });
-      loadData();
-    } catch (err: any) {
-      setMessage({ type: 'error', text: err.message });
-    }
+    setConfirmModalConfig({
+      title: 'Elimina Progetto',
+      message: 'Sei sicuro di voler eliminare questo progetto?',
+      confirmText: 'Elimina',
+      cancelText: 'Annulla',
+      confirmButtonClass: 'btn-danger',
+      onConfirm: async () => {
+        setConfirmModalConfig(null);
+        setShowConfirmModal(false);
+        try {
+          await deleteProject(id);
+          setMessage({ type: 'success', text: 'Progetto eliminato!' });
+          loadData();
+        } catch (err: any) {
+          setMessage({ type: 'error', text: err.message });
+        }
+      }
+    });
+    setShowConfirmModal(true);
   };
 
   const handleCreateCommessa = async (e: React.FormEvent) => {
@@ -210,14 +230,25 @@ export default function ManagerDashboard() {
   };
 
   const handleDeleteCommessa = async (id: number) => {
-    if (!confirm('Sei sicuro di voler eliminare questa commessa?')) return;
-    try {
-      await deleteCommessa(id);
-      setMessage({ type: 'success', text: 'Commessa eliminata!' });
-      loadData();
-    } catch (err: any) {
-      setMessage({ type: 'error', text: err.message });
-    }
+    setConfirmModalConfig({
+      title: 'Elimina Commessa',
+      message: 'Sei sicuro di voler eliminare questa commessa?',
+      confirmText: 'Elimina',
+      cancelText: 'Annulla',
+      confirmButtonClass: 'btn-danger',
+      onConfirm: async () => {
+        setConfirmModalConfig(null);
+        setShowConfirmModal(false);
+        try {
+          await deleteCommessa(id);
+          setMessage({ type: 'success', text: 'Commessa eliminata!' });
+          loadData();
+        } catch (err: any) {
+          setMessage({ type: 'error', text: err.message });
+        }
+      }
+    });
+    setShowConfirmModal(true);
   };
 
   const handleCreateEmployee = async (e: React.FormEvent) => {
@@ -249,14 +280,25 @@ export default function ManagerDashboard() {
   };
 
   const handleDeleteEmployee = async (id: number) => {
-    if (!confirm('Sei sicuro di voler eliminare questo dipendente?')) return;
-    try {
-      await deleteEmployee(id);
-      setMessage({ type: 'success', text: 'Dipendente eliminato!' });
-      loadData();
-    } catch (err: any) {
-      setMessage({ type: 'error', text: err.message });
-    }
+    setConfirmModalConfig({
+      title: 'Elimina Dipendente',
+      message: 'Sei sicuro di voler eliminare questo dipendente?',
+      confirmText: 'Elimina',
+      cancelText: 'Annulla',
+      confirmButtonClass: 'btn-danger',
+      onConfirm: async () => {
+        setConfirmModalConfig(null);
+        setShowConfirmModal(false);
+        try {
+          await deleteEmployee(id);
+          setMessage({ type: 'success', text: 'Dipendente eliminato!' });
+          loadData();
+        } catch (err: any) {
+          setMessage({ type: 'error', text: err.message });
+        }
+      }
+    });
+    setShowConfirmModal(true);
   };
 
   const openEmployeeModal = (employee?: Employee) => {
@@ -318,11 +360,10 @@ export default function ManagerDashboard() {
 
   // Raggruppa timesheet per settimana e dipendente
   const groupTimesheetsByWeek = () => {
-    const groups: { [key: string]: { employee: Employee, weekStart: Date, weekEnd: Date, timesheets: Timesheet[] } } = {};
+    const groups: { [key: string]: { employee: Employee, weekStart: Date, weekEnd: Date, timesheets: Timesheet[], stato: string } } = {};
     
     timesheets.forEach(ts => {
-      if (ts.stato !== 'pending') return; // Solo pending
-      
+      // Mostra tutti i timesheet, non solo pending
       const tsDate = new Date(ts.data);
       const monday = getMonday(tsDate);
       const sunday = new Date(monday);
@@ -337,17 +378,36 @@ export default function ManagerDashboard() {
             employee,
             weekStart: monday,
             weekEnd: sunday,
-            timesheets: []
+            timesheets: [],
+            stato: 'pending' // Inizializza come pending, verrà aggiornato dopo
           };
         }
       }
       
       if (groups[key]) {
         groups[key].timesheets.push(ts);
+        // Determina lo stato della settimana: se tutti i timesheet hanno lo stesso stato, usa quello, altrimenti 'mixed'
+        const weekStati = Array.from(new Set(groups[key].timesheets.map(t => t.stato)));
+        groups[key].stato = weekStati.length === 1 ? weekStati[0] : 'mixed';
       }
     });
     
-    return Object.values(groups).sort((a, b) => 
+    // Filtra in base a filterStato se necessario
+    let filteredGroups = Object.values(groups);
+    if (filterStato !== 'all') {
+      filteredGroups = filteredGroups.filter(group => {
+        if (filterStato === 'pending') {
+          return group.stato === 'pending';
+        } else if (filterStato === 'approved') {
+          return group.stato === 'approved';
+        } else if (filterStato === 'rejected') {
+          return group.stato === 'rejected';
+        }
+        return true;
+      });
+    }
+    
+    return filteredGroups.sort((a, b) => 
       b.weekStart.getTime() - a.weekStart.getTime()
     );
   };
@@ -535,7 +595,8 @@ export default function ManagerDashboard() {
               </div>
               <div>
                 <label>Anno: </label>
-                <select value={filterAnno} onChange={(e) => setFilterAnno(Number(e.target.value))}>
+                <select value={filterAnno || ''} onChange={(e) => setFilterAnno(e.target.value ? Number(e.target.value) : '')}>
+                  <option value="">Tutti</option>
                   {[2023, 2024, 2025, 2026].map(year => (
                     <option key={year} value={year}>{year}</option>
                   ))}
@@ -543,7 +604,8 @@ export default function ManagerDashboard() {
               </div>
               <div>
                 <label>Mese: </label>
-                <select value={filterMese} onChange={(e) => setFilterMese(Number(e.target.value))}>
+                <select value={filterMese || ''} onChange={(e) => setFilterMese(e.target.value ? Number(e.target.value) : '')}>
+                  <option value="">Tutti</option>
                   {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(month => (
                     <option key={month} value={month}>
                       {new Date(2024, month - 1).toLocaleString('it-IT', { month: 'long' })}
@@ -551,13 +613,26 @@ export default function ManagerDashboard() {
                   ))}
                 </select>
               </div>
+              <div>
+                <label>Stato: </label>
+                <select value={filterStato} onChange={(e) => setFilterStato(e.target.value as 'all' | 'pending' | 'approved' | 'rejected')}>
+                  <option value="all">Tutti</option>
+                  <option value="pending">In Attesa</option>
+                  <option value="approved">Approvato</option>
+                  <option value="rejected">Rifiutato</option>
+                </select>
+              </div>
             </div>
           </div>
 
           {/* Settimane da Approvare */}
-          {filterStato === 'all' || filterStato === 'pending' ? (
-            <div className="card">
-              <h3 style={{ marginBottom: '20px' }}>Settimane in Attesa di Approvazione</h3>
+          <div className="card">
+            <h3 style={{ marginBottom: '20px' }}>
+              {filterStato === 'all' ? 'Tutte le Settimane' : 
+               filterStato === 'pending' ? 'Settimane in Attesa di Approvazione' :
+               filterStato === 'approved' ? 'Settimane Approvate' :
+               'Settimane Rifiutate'}
+            </h3>
               {weeksToApprove.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '40px', color: '#666' }}>
                   Nessuna settimana in attesa di approvazione
@@ -592,6 +667,19 @@ export default function ManagerDashboard() {
                           </h4>
                           <div style={{ color: '#666', fontSize: '14px' }}>
                             {week.weekStart.toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' })} - {week.weekEnd.toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' })}
+                          </div>
+                          <div style={{ marginTop: '8px' }}>
+                            <span className={`badge badge-${week.stato === 'pending' ? 'warning' : week.stato === 'approved' ? 'success' : week.stato === 'rejected' ? 'danger' : 'secondary'}`} style={{
+                              padding: '4px 12px',
+                              borderRadius: '4px',
+                              fontSize: '12px',
+                              fontWeight: '500'
+                            }}>
+                              {week.stato === 'pending' ? '⏳ In Attesa' : 
+                               week.stato === 'approved' ? '✓ Approvato' : 
+                               week.stato === 'rejected' ? '✗ Rifiutato' : 
+                               '⚠ Misto'}
+                            </span>
                           </div>
                         </div>
                         <div style={{ textAlign: 'right' }}>
@@ -684,31 +772,62 @@ export default function ManagerDashboard() {
                       </div>
 
                       <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-                        <button 
-                          className="btn btn-success" 
-                          onClick={() => handleApproveWeek(week.employee.id, weekStartStr, weekEndStr)}
-                        >
-                          ✓ Approva Settimana
-                        </button>
-                        <button 
-                          className="btn btn-danger" 
-                          onClick={() => {
-                            if (confirm('Sei sicuro di voler rifiutare questa settimana?')) {
-                              handleRejectWeek(week.employee.id, weekStartStr, weekEndStr);
-                            }
-                          }}
-                        >
-                          ✗ Rifiuta Settimana
-                        </button>
+                        {week.stato === 'pending' && (
+                          <>
+                            <button 
+                              className="btn btn-success" 
+                              onClick={() => handleApproveWeek(week.employee.id, weekStartStr, weekEndStr)}
+                            >
+                              ✓ Approva Settimana
+                            </button>
+                            <button 
+                              className="btn btn-danger" 
+                              onClick={() => {
+                                setConfirmModalConfig({
+                                  title: 'Rifiuta Settimana',
+                                  message: `Sei sicuro di voler rifiutare la settimana di ${week.employee.nome} ${week.employee.cognome}?`,
+                                  confirmText: 'Rifiuta',
+                                  cancelText: 'Annulla',
+                                  confirmButtonClass: 'btn-danger',
+                                  onConfirm: async () => {
+                                    setConfirmModalConfig(null);
+                                    setShowConfirmModal(false);
+                                    await handleRejectWeek(week.employee.id, weekStartStr, weekEndStr);
+                                  }
+                                });
+                                setShowConfirmModal(true);
+                              }}
+                            >
+                              ✗ Rifiuta Settimana
+                            </button>
+                          </>
+                        )}
+                        {week.stato === 'approved' && (
+                          <span style={{ color: '#28a745', fontWeight: 'bold', padding: '8px 16px' }}>
+                            ✓ Settimana Approvata
+                          </span>
+                        )}
+                        {week.stato === 'rejected' && (
+                          <span style={{ color: '#dc3545', fontWeight: 'bold', padding: '8px 16px' }}>
+                            ✗ Settimana Rifiutata
+                          </span>
+                        )}
+                        {week.stato === 'mixed' && (
+                          <span style={{ color: '#ffc107', fontWeight: 'bold', padding: '8px 16px' }}>
+                            ⚠ Stato Misto
+                          </span>
+                        )}
                       </div>
                     </div>
                   );
                 })
               )}
             </div>
-          ) : (
-            <div className="card">
-              <h3 style={{ marginBottom: '20px' }}>Tutti i Timesheets</h3>
+            
+            {/* Tabella dettagliata per tutti i timesheet (quando non si usa la vista settimanale) */}
+            {filterStato !== 'all' && filterStato !== 'pending' && (
+            <div className="card" style={{ marginTop: '20px' }}>
+              <h3 style={{ marginBottom: '20px' }}>Dettaglio Timesheets</h3>
               <table className="table">
                 <thead>
                   <tr>
@@ -778,7 +897,7 @@ export default function ManagerDashboard() {
                 </tbody>
               </table>
             </div>
-          )}
+            )}
         </div>
       )}
 
@@ -1161,6 +1280,62 @@ export default function ManagerDashboard() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modale di Conferma Generico */}
+      {showConfirmModal && confirmModalConfig && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }} onClick={() => {
+          setShowConfirmModal(false);
+          setConfirmModalConfig(null);
+        }}>
+          <div style={{
+            background: 'white',
+            padding: '30px',
+            borderRadius: '8px',
+            maxWidth: '500px',
+            width: '90%',
+            boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
+          }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0, marginBottom: '15px' }}>
+              {confirmModalConfig.title}
+            </h3>
+            <p style={{ marginBottom: '20px', fontSize: '16px' }}>
+              {confirmModalConfig.message}
+            </p>
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  setShowConfirmModal(false);
+                  setConfirmModalConfig(null);
+                }}
+                disabled={loading}
+              >
+                {confirmModalConfig.cancelText || 'Annulla'}
+              </button>
+              <button
+                className={confirmModalConfig.confirmButtonClass || 'btn btn-success'}
+                onClick={() => {
+                  confirmModalConfig.onConfirm();
+                }}
+                disabled={loading}
+              >
+                {loading ? 'Elaborazione...' : (confirmModalConfig.confirmText || 'Conferma')}
+              </button>
+            </div>
           </div>
         </div>
       )}

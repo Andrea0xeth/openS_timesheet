@@ -506,36 +506,6 @@ export default function EmployeeDashboard() {
     setShowConfirmModal(true);
   };
 
-    // Rimuovi tutte le modifiche locali per questa riga PRIMA di rimuovere la riga
-    setLocalChanges(prev => {
-      const newChanges = { ...prev };
-      Object.keys(newChanges).forEach(key => {
-        // Se la chiave inizia con empty_X o project_id_commessa_id di questa riga
-        if (row.id.startsWith('empty_')) {
-          // Rimuovi tutte le celle che iniziano con empty_X_dateKey
-          if (key.startsWith(`${row.id}_`)) {
-            delete newChanges[key];
-          }
-        } else if (row.project_id > 0 && row.commessa_id > 0) {
-          // Rimuovi tutte le celle che iniziano con project_id_commessa_id_dateKey
-          if (key.startsWith(`${row.project_id}_${row.commessa_id}_`)) {
-            delete newChanges[key];
-          }
-        }
-      });
-      return newChanges;
-    });
-
-    // Rimuovi la riga da addedRows solo se è in addedRows
-    if (addedRowIndex >= 0) {
-      setAddedRows(prev => {
-        const newRows = [...prev];
-        newRows.splice(addedRowIndex, 1);
-        return newRows;
-      });
-    }
-  };
-
   const handleSaveAndSubmitWeek = async () => {
     console.log('handleSaveAndSubmitWeek chiamato');
     

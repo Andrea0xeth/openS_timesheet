@@ -39,7 +39,22 @@ export default function LoginPage() {
       background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
     }}>
       <div className="card" style={{ maxWidth: '400px', width: '90%' }}>
-        <h2 style={{ textAlign: 'center', marginBottom: '30px' }}>Timesheet System</h2>
+        <div style={{ textAlign: 'center', marginBottom: '30px' }}>
+          <img 
+            src="/images/logo.png" 
+            alt="Logo" 
+            style={{ 
+              maxWidth: '150px', 
+              height: 'auto',
+              marginBottom: '20px'
+            }}
+            onError={(e) => {
+              // Se il logo non esiste, nascondi l'immagine
+              (e.target as HTMLImageElement).style.display = 'none';
+            }}
+          />
+          <h2 style={{ margin: 0 }}>Timesheet System</h2>
+        </div>
         
         {error && (
           <div className="alert alert-error">

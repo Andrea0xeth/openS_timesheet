@@ -39,7 +39,21 @@ export default function DashboardPage() {
           justifyContent: 'space-between', 
           alignItems: 'center' 
         }}>
-          <h1 style={{ margin: 0 }}>Timesheet System</h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+            <img 
+              src="/images/logo.png" 
+              alt="Logo" 
+              style={{ 
+                height: '40px', 
+                width: 'auto'
+              }}
+              onError={(e) => {
+                // Se il logo non esiste, nascondi l'immagine
+                (e.target as HTMLImageElement).style.display = 'none';
+              }}
+            />
+            <h1 style={{ margin: 0 }}>Timesheet System</h1>
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
             <span>Ciao, {user?.nome} {user?.cognome}</span>
             <span className="badge badge-active">{manager ? 'Manager' : 'Dipendente'}</span>

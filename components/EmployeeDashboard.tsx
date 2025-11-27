@@ -21,23 +21,30 @@ function getMonday(date: Date): Date {
   const d = new Date(date);
   const day = d.getDay();
   const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  return new Date(d.setDate(diff));
+  const monday = new Date(d.setDate(diff));
+  // Assicurati che sia a mezzanotte locale
+  return new Date(monday.getFullYear(), monday.getMonth(), monday.getDate(), 0, 0, 0, 0);
 }
 
 // Funzione per ottenere i giorni della settimana
 function getWeekDays(monday: Date): Date[] {
   const days: Date[] = [];
+  // Assicurati che il lunedì sia a mezzanotte locale
+  const mondayLocal = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate(), 0, 0, 0, 0);
   for (let i = 0; i < 7; i++) {
-    const day = new Date(monday);
-    day.setDate(monday.getDate() + i);
+    const day = new Date(mondayLocal);
+    day.setDate(mondayLocal.getDate() + i);
     days.push(day);
   }
   return days;
 }
 
-// Formatta data come YYYY-MM-DD
+// Formatta data come YYYY-MM-DD (usa valori locali per evitare problemi di timezone)
 function formatDate(date: Date): string {
-  return date.toISOString().split('T')[0];
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 // Verifica se due date sono lo stesso giorno
@@ -82,6 +89,17 @@ export default function EmployeeDashboard() {
     { project_id: 0, commessa_id: 0 }
   ]);
 
+  // Stato per il modale di conferma
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
+  const [confirmModalConfig, setConfirmModalConfig] = useState<{
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    confirmText?: string;
+    cancelText?: string;
+  } | null>(null);
+
   useEffect(() => {
     loadData();
   }, []);
@@ -103,6 +121,18 @@ export default function EmployeeDashboard() {
       setProjects(projectsRes.projects);
       setTimesheets(timesheetsRes.timesheets);
       
+      // Debug: log dei timesheet caricati
+      console.log('Timesheet totali caricati:', timesheetsRes.timesheets.length);
+      if (timesheetsRes.timesheets.length > 0) {
+        console.log('Primi 5 timesheet:', timesheetsRes.timesheets.slice(0, 5).map(ts => ({
+          id: ts.id,
+          data: ts.data,
+          project_id: ts.project_id,
+          commessa_id: ts.commessa_id,
+          ore: ts.ore
+        })));
+      }
+      
       // Carica commesse per tutti i progetti (per avere i nomi)
       const loadedCommesse: Commessa[] = [];
       for (const project of projectsRes.projects) {
@@ -123,6 +153,7 @@ export default function EmployeeDashboard() {
 
 
   // Organizza timesheet in righe per progetto/commessa (include modifiche locali)
+  // Usa la stessa logica semplice del ManagerDashboard per garantire coerenza
   const organizeTimesheets = (): TimesheetRow[] => {
     const rowsMap: { [key: string]: TimesheetRow } = {};
     
@@ -132,79 +163,82 @@ export default function EmployeeDashboard() {
       daysMap[formatDate(day)] = { ore: 0, descrizione: '' };
     });
 
-    // Prima, aggiungi tutte le righe manualmente aggiunte (anche se vuote)
-    // Le righe con project_id = 0 sono righe vuote da compilare
-    addedRows.forEach((addedRow, index) => {
-      // Se la riga ha project_id = 0, è una riga vuota da compilare
-      if (addedRow.project_id === 0 && addedRow.commessa_id === 0) {
-        const key = `empty_${index}`;
-        rowsMap[key] = {
-          id: key,
-          project_id: 0,
-          commessa_id: 0,
-          project_name: '',
-          commessa_name: '',
-          days: JSON.parse(JSON.stringify(daysMap)),
-          total: 0
-        };
-      } else if (addedRow.project_id > 0) {
-        // Riga con progetto selezionato (anche se commessa non ancora selezionata)
-        // Usa sempre empty_index per mantenere la riga visibile e tracciabile
-        const key = `empty_${index}`;
-        if (!rowsMap[key]) {
-          const project = projects.find(p => p.id === addedRow.project_id);
-          const commessa = addedRow.commessa_id > 0 ? allCommesse.find(c => c.id === addedRow.commessa_id) : null;
-          
-          rowsMap[key] = {
-            id: key,
-            project_id: addedRow.project_id,
-            commessa_id: addedRow.commessa_id || 0,
-            project_name: project?.nome || '',
-            commessa_name: commessa?.nome || '',
-            days: JSON.parse(JSON.stringify(daysMap)),
-            total: 0
-          };
+    // STEP 1: Processa i timesheet salvati (stessa logica del ManagerDashboard)
+    // Filtra solo i timesheet della settimana corrente
+    const weekStartStr = formatDate(weekDays[0]);
+    const weekEndStr = formatDate(weekDays[6]);
+    
+    const weekTimesheets = timesheets.filter(ts => {
+      // Gestisci sia stringhe che oggetti Date
+      let tsDate: Date;
+      if (typeof ts.data === 'string') {
+        // Se è una stringa nel formato YYYY-MM-DD, parsala come data locale (non UTC)
+        const dateStr = ts.data.trim();
+        if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+          // Formato YYYY-MM-DD: crea data in timezone locale (mezzanotte locale)
+          const [year, month, day] = dateStr.split('-').map(Number);
+          tsDate = new Date(year, month - 1, day, 0, 0, 0, 0);
+        } else {
+          tsDate = new Date(dateStr);
         }
+      } else if (ts.data && typeof ts.data === 'object' && 'getTime' in ts.data) {
+        tsDate = new Date((ts.data as any).getTime());
+      } else {
+        tsDate = new Date(ts.data as any);
       }
+      
+      if (isNaN(tsDate.getTime())) {
+        return false;
+      }
+      
+      const tsDateStr = formatDate(tsDate);
+      return tsDateStr >= weekStartStr && tsDateStr <= weekEndStr;
     });
 
-    // Raggruppa timesheet per progetto/commessa
-    timesheets.forEach(ts => {
-      const tsDate = new Date(ts.data);
-      const tsDateStr = formatDate(tsDate);
-      const weekStartStr = formatDate(weekDays[0]);
-      const weekEndStr = formatDate(weekDays[6]);
-      
-      // Verifica se il timesheet è nella settimana corrente
-      if (tsDateStr < weekStartStr || tsDateStr > weekEndStr) return;
-      
-      const key = `${ts.project_id}_${ts.commessa_id}`;
-      const dateKey = tsDateStr;
-      const cellKey = `${key}_${dateKey}`;
-      
-      // Se c'è una modifica locale, usa quella invece del timesheet salvato
-      if (localChanges[cellKey]) {
-        return; // Salta questo timesheet, useremo la modifica locale
+    // Raggruppa timesheet per progetto/commessa (stessa logica del ManagerDashboard)
+    weekTimesheets.forEach(ts => {
+      // Gestisci sia stringhe che oggetti Date
+      let tsDate: Date;
+      if (typeof ts.data === 'string') {
+        // Se è una stringa nel formato YYYY-MM-DD, parsala come data locale (non UTC)
+        const dateStr = ts.data.trim();
+        if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+          // Formato YYYY-MM-DD: crea data in timezone locale (mezzanotte locale)
+          const [year, month, day] = dateStr.split('-').map(Number);
+          tsDate = new Date(year, month - 1, day, 0, 0, 0, 0);
+        } else {
+          tsDate = new Date(dateStr);
+        }
+      } else if (ts.data && typeof ts.data === 'object' && 'getTime' in ts.data) {
+        tsDate = new Date((ts.data as any).getTime());
+      } else {
+        tsDate = new Date(ts.data as any);
       }
       
-      // Se questa riga è già in addedRows, non crearla di nuovo (usa quella esistente)
-      const isInAddedRows = addedRows.some(r => r.project_id === ts.project_id && r.commessa_id === ts.commessa_id);
-      if (isInAddedRows) {
-        // Aggiorna solo i giorni, non creare nuova riga
-        const existingKey = Object.keys(rowsMap).find(k => {
-          const r = rowsMap[k];
-          return r.project_id === ts.project_id && r.commessa_id === ts.commessa_id;
-        });
-        if (existingKey) {
-          rowsMap[existingKey].days[dateKey] = {
-            timesheetId: ts.id,
-            ore: ts.ore,
-            descrizione: ts.descrizione || ''
-          };
-        }
+      if (isNaN(tsDate.getTime())) {
+        console.warn('Data non valida per timesheet:', ts.id, ts.data);
         return;
       }
       
+      // Formatta la data usando valori locali (stesso metodo usato per weekDays)
+      const tsDateStr = formatDate(tsDate);
+      
+      // Verifica che la data formattata corrisponda a uno dei giorni della settimana
+      const isValidDate = weekDays.some(day => formatDate(day) === tsDateStr);
+      if (!isValidDate) {
+        console.warn('Data timesheet non corrisponde a nessun giorno della settimana:', tsDateStr, 'timesheet:', ts.id, 'data originale:', ts.data);
+        return;
+      }
+      
+      const key = `${ts.project_id}_${ts.commessa_id}`;
+      const cellKey = `${key}_${tsDateStr}`;
+      
+      // Se c'è una modifica locale, salta questo timesheet (useremo la modifica locale)
+      if (localChanges[cellKey]) {
+        return;
+      }
+      
+      // Crea o aggiorna la riga per questo progetto/commessa
       if (!rowsMap[key]) {
         const project = projects.find(p => p.id === ts.project_id);
         const commessa = allCommesse.find(c => c.id === ts.commessa_id);
@@ -220,31 +254,100 @@ export default function EmployeeDashboard() {
         };
       }
       
-      rowsMap[key].days[dateKey] = {
-        timesheetId: ts.id,
-        ore: ts.ore,
-        descrizione: ts.descrizione || ''
-      };
+      // Aggiorna il giorno specifico con i dati del timesheet
+      // Verifica che la chiave esista in daysMap
+      if (rowsMap[key].days[tsDateStr] !== undefined) {
+        rowsMap[key].days[tsDateStr] = {
+          timesheetId: ts.id,
+          ore: Number(ts.ore) || 0,
+          descrizione: ts.descrizione || ''
+        };
+      } else {
+        console.warn('Chiave data non trovata in daysMap:', tsDateStr, 'timesheet:', ts.id, 'giorni disponibili:', Object.keys(rowsMap[key].days));
+      }
     });
 
-    // Applica modifiche locali
+    // STEP 3: POI aggiungi le righe vuote da addedRows solo se non esistono già
+    // (per permettere di aggiungere nuove righe anche se ci sono già dati salvati)
+    addedRows.forEach((addedRow, index) => {
+      // Se la riga ha project_id = 0, è una riga vuota da compilare
+      if (addedRow.project_id === 0 && addedRow.commessa_id === 0) {
+        const key = `empty_${index}`;
+        // Aggiungi solo se non esiste già una riga con questa key
+        if (!rowsMap[key]) {
+          rowsMap[key] = {
+            id: key,
+            project_id: 0,
+            commessa_id: 0,
+            project_name: '',
+            commessa_name: '',
+            days: JSON.parse(JSON.stringify(daysMap)),
+            total: 0
+          };
+        }
+      } else if (addedRow.project_id > 0 && addedRow.commessa_id > 0) {
+        // Riga con progetto e commessa selezionati
+        // Verifica se esiste già una riga con questo progetto/commessa
+        const existingKey = Object.keys(rowsMap).find(k => {
+          const r = rowsMap[k];
+          return r.project_id === addedRow.project_id && r.commessa_id === addedRow.commessa_id;
+        });
+        
+        // Se non esiste, crea una nuova riga vuota (per modifiche locali)
+        if (!existingKey) {
+          const key = `empty_${index}`;
+          const project = projects.find(p => p.id === addedRow.project_id);
+          const commessa = allCommesse.find(c => c.id === addedRow.commessa_id);
+          
+          rowsMap[key] = {
+            id: key,
+            project_id: addedRow.project_id,
+            commessa_id: addedRow.commessa_id,
+            project_name: project?.nome || '',
+            commessa_name: commessa?.nome || '',
+            days: JSON.parse(JSON.stringify(daysMap)),
+            total: 0
+          };
+        }
+      } else if (addedRow.project_id > 0 && addedRow.commessa_id === 0) {
+        // Riga con solo progetto selezionato (commessa non ancora selezionata)
+        const key = `empty_${index}`;
+        if (!rowsMap[key]) {
+          const project = projects.find(p => p.id === addedRow.project_id);
+          
+          rowsMap[key] = {
+            id: key,
+            project_id: addedRow.project_id,
+            commessa_id: 0,
+            project_name: project?.nome || '',
+            commessa_name: '',
+            days: JSON.parse(JSON.stringify(daysMap)),
+            total: 0
+          };
+        }
+      }
+    });
+
+
+    // STEP 2: Applica modifiche locali (sovrascrivono i dati salvati)
     Object.entries(localChanges).forEach(([cellKey, change]) => {
       // cellKey formato: "projectId_commessaId_dateKey"
-      const parts = cellKey.split('_');
-      const dateKey = parts.slice(-1)[0]; // Ultima parte è la data
+      const key = `${change.project_id}_${change.commessa_id}`;
       
-      // Trova la riga corrispondente in addedRows
-      const addedRowIndex = addedRows.findIndex(r => r.project_id === change.project_id && r.commessa_id === change.commessa_id);
-      
-      let fullRowKey = '';
-      if (addedRowIndex >= 0) {
-        // Usa empty_index per mantenere la riga tracciabile
-        fullRowKey = `empty_${addedRowIndex}`;
-      } else {
-        // Se non è in addedRows, usa il formato projectId_commessaId
-        fullRowKey = `${change.project_id}_${change.commessa_id}`;
+      // Prima verifica se esiste già una riga con questo progetto/commessa (da timesheet salvati)
+      let fullRowKey = key;
+      if (!rowsMap[key]) {
+        // Se non esiste, verifica se è in addedRows
+        const addedRowIndex = addedRows.findIndex(r => r.project_id === change.project_id && r.commessa_id === change.commessa_id);
+        if (addedRowIndex >= 0) {
+          fullRowKey = `empty_${addedRowIndex}`;
+        } else {
+          // Crea nuova riga per la modifica locale
+          fullRowKey = key;
+        }
       }
       
+      // Crea la riga se non esiste
       if (!rowsMap[fullRowKey]) {
         const project = projects.find(p => p.id === change.project_id);
         const commessa = allCommesse.find(c => c.id === change.commessa_id);
@@ -260,6 +363,7 @@ export default function EmployeeDashboard() {
         };
       }
       
+      // Applica la modifica locale (sovrascrive il valore salvato se presente)
       rowsMap[fullRowKey].days[change.date] = {
         timesheetId: change.timesheetId,
         ore: change.ore,
@@ -278,6 +382,15 @@ export default function EmployeeDashboard() {
 
   const handleSaveCell = (cellKey: string, date: Date, ore: number) => {
     if (!user?.id) return;
+    
+    // Verifica se è sabato (getDay() === 6) o domenica (getDay() === 0)
+    const dayOfWeek = date.getDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      const dayName = dayOfWeek === 0 ? 'domenica' : 'sabato';
+      setMessage({ type: 'error', text: `Non è possibile inserire ore il ${dayName}` });
+      setEditingCell(null);
+      return;
+    }
     
     const dateStr = formatDate(date);
     
@@ -352,9 +465,46 @@ export default function EmployeeDashboard() {
   };
 
   const handleDeleteRow = (addedRowIndex: number, row: TimesheetRow) => {
-    if (!confirm('Sei sicuro di voler eliminare questa riga? Tutte le ore inserite verranno perse.')) {
-      return;
-    }
+    setConfirmModalConfig({
+      title: 'Elimina Riga',
+      message: 'Sei sicuro di voler eliminare questa riga? Tutte le ore inserite verranno perse.',
+      confirmText: 'Elimina',
+      cancelText: 'Annulla',
+      onConfirm: () => {
+        setConfirmModalConfig(null);
+        
+        // Rimuovi tutte le modifiche locali per questa riga PRIMA di rimuovere la riga
+        setLocalChanges(prev => {
+          const newChanges = { ...prev };
+          Object.keys(newChanges).forEach(key => {
+            // Se la chiave inizia con empty_X o project_id_commessa_id di questa riga
+            if (row.id.startsWith('empty_')) {
+              // Rimuovi tutte le celle che iniziano con empty_X_dateKey
+              if (key.startsWith(`${row.id}_`)) {
+                delete newChanges[key];
+              }
+            } else if (row.project_id > 0 && row.commessa_id > 0) {
+              // Rimuovi tutte le celle che iniziano con project_id_commessa_id_dateKey
+              if (key.startsWith(`${row.project_id}_${row.commessa_id}_`)) {
+                delete newChanges[key];
+              }
+            }
+          });
+          return newChanges;
+        });
+
+        // Rimuovi la riga da addedRows solo se è in addedRows
+        if (addedRowIndex >= 0) {
+          setAddedRows(prev => {
+            const newRows = [...prev];
+            newRows.splice(addedRowIndex, 1);
+            return newRows;
+          });
+        }
+      }
+    });
+    setShowConfirmModal(true);
+  };
 
     // Rimuovi tutte le modifiche locali per questa riga PRIMA di rimuovere la riga
     setLocalChanges(prev => {
@@ -387,16 +537,23 @@ export default function EmployeeDashboard() {
   };
 
   const handleSaveAndSubmitWeek = async () => {
-    if (!user?.id) return;
+    console.log('handleSaveAndSubmitWeek chiamato');
     
-    // Verifica che la settimana sia completa
+    if (!user?.id) {
+      console.error('User ID non disponibile');
+      setMessage({ type: 'error', text: 'Errore: utente non autenticato' });
+      return;
+    }
+    
+    // Verifica che la settimana sia completa (solo giorni lavorativi lun-ven)
+    // Sabato e domenica sono esclusi dalla validazione
     if (!weekValidation.isValid) {
       const incompleteDaysList = weekValidation.incompleteDays
         .map(d => `${d.day.toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric' })} (${d.total.toFixed(1)}h, mancano ${d.missing.toFixed(1)}h)`)
         .join(', ');
       setMessage({ 
         type: 'error', 
-        text: `Impossibile inviare: tutti i giorni devono avere esattamente 8 ore. Giorni incompleti: ${incompleteDaysList}` 
+        text: `Impossibile inviare: tutti i giorni lavorativi (lun-ven) devono avere esattamente 8 ore. Giorni incompleti: ${incompleteDaysList}` 
       });
       return;
     }
@@ -406,51 +563,108 @@ export default function EmployeeDashboard() {
     
     // Conta modifiche locali
     const changesCount = Object.keys(localChanges).length;
+    console.log('Modifiche locali da salvare:', changesCount, localChanges);
 
-    if (!confirm(`Vuoi salvare e inviare in approvazione la settimana? ${changesCount > 0 ? `(${changesCount} modifiche da salvare)` : ''}`)) {
+    // Mostra dialog di conferma solo se ci sono modifiche significative
+    // Per evitare problemi con il confirm, procediamo direttamente se ci sono modifiche
+    // Mostra modale di conferma invece del confirm del browser
+    setPendingAction(() => async () => {
+      console.log('Conferma ricevuta, procedo con il salvataggio...');
+      await executeSaveAndSubmit();
+    });
+    setShowConfirmModal(true);
+  };
+
+  const executeSaveAndSubmit = async () => {
+    if (!user?.id) {
+      console.error('User ID non disponibile');
+      setMessage({ type: 'error', text: 'Errore: utente non autenticato' });
       return;
     }
+    
+    const weekStart = formatDate(weekDays[0]);
+    const weekEnd = formatDate(weekDays[6]);
+    const changesCount = Object.keys(localChanges).length;
 
     try {
       setLoading(true);
+      console.log('Inizio salvataggio...');
       
       // Salva tutte le modifiche locali
       if (changesCount > 0) {
+        console.log('Salvataggio modifiche locali...');
         await saveAllLocalChanges();
+        console.log('Modifiche locali salvate');
       }
       
       // Invia settimana in approvazione
-      await submitWeekForApproval(user.id, weekStart, weekEnd);
+      console.log('Invio settimana in approvazione...', { employeeId: user.id, weekStart, weekEnd });
+      const result = await submitWeekForApproval(user.id, weekStart, weekEnd);
+      console.log('Risultato submitWeekForApproval:', result);
       
       setMessage({ type: 'success', text: 'Settimana salvata e inviata in approvazione!' });
       setLocalChanges({});
       setAddedRows([]); // Reset righe aggiunte dopo il salvataggio
+      
+      console.log('Ricarico dati...');
       await loadData();
+      console.log('Operazione completata');
     } catch (err: any) {
-      setMessage({ type: 'error', text: err.message });
+      console.error('Errore in executeSaveAndSubmit:', err);
+      setMessage({ 
+        type: 'error', 
+        text: `Errore: ${err.message || 'Errore sconosciuto durante il salvataggio'}` 
+      });
     } finally {
       setLoading(false);
+      setShowConfirmModal(false);
+      setPendingAction(null);
     }
   };
 
+  const handleConfirmModalConfirm = async () => {
+    if (pendingAction) {
+      await pendingAction();
+    }
+  };
+
+  const handleConfirmModalCancel = () => {
+    setShowConfirmModal(false);
+    setPendingAction(null);
+    console.log('Operazione annullata dall\'utente');
+  };
+
   const saveAllLocalChanges = async () => {
-    if (!user?.id) return;
+    if (!user?.id) {
+      console.error('saveAllLocalChanges: User ID non disponibile');
+      throw new Error('Utente non autenticato');
+    }
     
     const changes = Object.values(localChanges);
+    console.log('saveAllLocalChanges: elaborando', changes.length, 'modifiche');
     
     // Raggruppa per operazione (create, update, delete)
-    const toCreate: Array<{ employee_id: number; project_id: number; commessa_id: number; data: string; ore: number; descrizione: string; stato: string }> = [];
-    const toUpdate: Array<{ id: number; ore: number; descrizione: string; stato: string }> = [];
+    const toCreate: Array<{ employee_id: number; project_id: number; commessa_id: number; data: string; ore: number; descrizione: string; stato: 'pending' | 'approved' | 'rejected' }> = [];
+    const toUpdate: Array<{ id: number; ore: number; descrizione: string; stato: 'pending' | 'approved' | 'rejected' }> = [];
     const toDelete: number[] = [];
     
     changes.forEach(change => {
+      // Verifica se la data è sabato o domenica e salta questa modifica
+      const changeDate = new Date(change.date);
+      const dayOfWeek = changeDate.getDay();
+      if (dayOfWeek === 0 || dayOfWeek === 6) {
+        const dayName = dayOfWeek === 0 ? 'domenica' : 'sabato';
+        console.log(`saveAllLocalChanges: saltata modifica per ${dayName}`, change.date);
+        return; // Salta le modifiche del weekend
+      }
+      
       if (change.ore > 0) {
         if (change.timesheetId) {
           toUpdate.push({
             id: change.timesheetId,
             ore: change.ore,
             descrizione: '',
-            stato: 'pending'
+            stato: 'pending' as const
           });
         } else {
           toCreate.push({
@@ -460,7 +674,7 @@ export default function EmployeeDashboard() {
             data: change.date,
             ore: change.ore,
             descrizione: '',
-            stato: 'pending'
+            stato: 'pending' as const
           });
         }
       } else if (change.timesheetId) {
@@ -468,13 +682,23 @@ export default function EmployeeDashboard() {
       }
     });
     
+    console.log('saveAllLocalChanges: toCreate:', toCreate.length, 'toUpdate:', toUpdate.length, 'toDelete:', toDelete.length);
+    
     // Se non ci sono modifiche, esci
     if (toCreate.length === 0 && toUpdate.length === 0 && toDelete.length === 0) {
+      console.log('saveAllLocalChanges: nessuna modifica da salvare');
       return;
     }
     
     // Salva tutto in una singola chiamata batch
-    await batchSaveTimesheets(toCreate, toUpdate, toDelete);
+    try {
+      console.log('saveAllLocalChanges: chiamata batchSaveTimesheets...');
+      const result = await batchSaveTimesheets(toCreate, toUpdate, toDelete);
+      console.log('saveAllLocalChanges: risultato batchSaveTimesheets:', result);
+    } catch (error) {
+      console.error('saveAllLocalChanges: errore in batchSaveTimesheets:', error);
+      throw error;
+    }
   };
 
   const goToPreviousWeek = () => {
@@ -498,10 +722,13 @@ export default function EmployeeDashboard() {
   // Calcola totali per giorno
   const dayTotals = weekDays.map(day => {
     const dateKey = formatDate(day);
-    return rows.reduce((sum, row) => sum + (row.days[dateKey]?.ore || 0), 0);
+    return rows.reduce((sum, row) => sum + (Number(row.days[dateKey]?.ore) || 0), 0);
   });
   
-  const weekTotal = dayTotals.reduce((sum, total) => sum + total, 0);
+  const weekTotal: number = dayTotals.reduce((sum: number, total: any) => {
+    const numTotal = Number(total) || 0;
+    return sum + numTotal;
+  }, 0);
   
   // Trova commesse già selezionate (escludendo la riga corrente)
   const getUsedCommesse = (excludeRowIndex: number) => {
@@ -532,11 +759,18 @@ export default function EmployeeDashboard() {
     return projectsWithAllUsed;
   };
   
-  // Verifica se la settimana è completa (tutti i giorni con esattamente 8 ore)
+  // Verifica se la settimana è completa (solo giorni lavorativi lun-ven con esattamente 8 ore)
+  // Sabato e domenica sono esclusi dalla validazione
   const weekValidation = (() => {
     const incompleteDays: Array<{ day: Date; total: number; missing: number }> = [];
     
     weekDays.forEach((day, idx) => {
+      const dayOfWeek = day.getDay();
+      // Escludi sabato (6) e domenica (0) dalla validazione
+      if (dayOfWeek === 0 || dayOfWeek === 6) {
+        return; // Salta sabato e domenica
+      }
+      
       const total = dayTotals[idx] || 0;
       if (total !== 8) {
         incompleteDays.push({
@@ -622,8 +856,17 @@ export default function EmployeeDashboard() {
                 {weekDays.map((day, idx) => {
                   const dayTotal = dayTotals[idx] || 0;
                   const isOverLimit = dayTotal > 8;
+                  const dayOfWeek = day.getDay();
+                  const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
                   return (
-                    <th key={idx} style={{ minWidth: '80px', textAlign: 'center' }}>
+                    <th 
+                      key={idx} 
+                      style={{ 
+                        minWidth: '80px', 
+                        textAlign: 'center',
+                        background: isWeekend ? '#ffe6e6' : '#f8f9fa'
+                      }}
+                    >
                       <div>{day.getDate()}</div>
                       <div style={{ fontSize: '11px', color: '#666' }}>
                         {day.toLocaleDateString('it-IT', { weekday: 'short' })}
@@ -831,12 +1074,17 @@ export default function EmployeeDashboard() {
                       : row.days[dateKey];
                     const hasLocalChange = !!localChange;
                     
+                    // Verifica se è sabato (getDay() === 6) o domenica (getDay() === 0)
+                    const dayOfWeek = day.getDay();
+                    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+                    
                     // Permetti di scrivere se:
                     // 1. La riga ha progetto E commessa selezionati, OPPURE
                     // 2. La riga è vuota ma ha un progetto selezionato (per permettere di inserire ore anche prima di selezionare commessa)
-                    const canEdit = (row.project_id > 0 && row.commessa_id > 0) || 
+                    // 3. NON è sabato o domenica (i giorni festivi non sono modificabili)
+                    const canEdit = !isWeekend && ((row.project_id > 0 && row.commessa_id > 0) || 
                                    (isEmptyRow && addedRows[addedRowIndex]?.project_id > 0 && addedRows[addedRowIndex]?.commessa_id > 0) ||
-                                   (!isEmptyRow && row.project_id > 0);
+                                   (!isEmptyRow && row.project_id > 0));
                     
                     return (
                       <td key={dayIdx} style={{ textAlign: 'center', padding: '2px' }}>
@@ -869,6 +1117,11 @@ export default function EmployeeDashboard() {
                         ) : (
                           <div
                             onClick={(e) => {
+                              if (isWeekend) {
+                                const dayName = dayOfWeek === 0 ? 'domenica' : 'sabato';
+                                setMessage({ type: 'error', text: `Non è possibile inserire ore il ${dayName}` });
+                                return;
+                              }
                               if (!canEdit) {
                                 setMessage({ type: 'error', text: 'Seleziona progetto e commessa prima di inserire le ore' });
                                 return;
@@ -881,12 +1134,12 @@ export default function EmployeeDashboard() {
                               minHeight: '30px',
                               padding: '5px',
                               cursor: canEdit ? 'pointer' : 'not-allowed',
-                              background: cell?.ore > 0 ? (hasLocalChange ? '#fff3cd' : '#e3f2fd') : 'transparent',
+                              background: isWeekend ? '#ffe6e6' : (cell?.ore > 0 ? (hasLocalChange ? '#fff3cd' : '#e3f2fd') : 'transparent'),
                               borderRadius: '3px',
-                              border: hasLocalChange ? '2px solid #ffc107' : '1px dashed #ddd',
+                              border: hasLocalChange ? '2px solid #ffc107' : isWeekend ? '1px solid #ffcccc' : '1px dashed #ddd',
                               opacity: canEdit ? 1 : 0.5
                             }}
-                            title={!canEdit ? 'Seleziona progetto e commessa' : hasLocalChange ? 'Modifica non salvata' : ''}
+                            title={isWeekend ? `${dayOfWeek === 0 ? 'Domenica' : 'Sabato'}: giorno festivo, non modificabile` : (!canEdit ? 'Seleziona progetto e commessa' : hasLocalChange ? 'Modifica non salvata' : '')}
                           >
                             {cell?.ore > 0 ? Number(cell.ore).toFixed(1) : ''}
                             {hasLocalChange && <span style={{ fontSize: '10px', color: '#ffc107' }}> *</span>}
@@ -915,24 +1168,27 @@ export default function EmployeeDashboard() {
                 </td>
                 {dayTotals.map((total, idx) => {
                   const isOverLimit = total > 8;
+                  const day = weekDays[idx];
+                  const dayOfWeek = day.getDay();
+                  const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
                   return (
                     <td 
                       key={idx} 
                       style={{ 
                         textAlign: 'center', 
-                        background: isOverLimit ? '#f8d7da' : total > 0 ? '#fff3cd' : '#f0f0f0',
+                        background: isWeekend ? '#ffe6e6' : (isOverLimit ? '#f8d7da' : total > 0 ? '#fff3cd' : '#f0f0f0'),
                         color: isOverLimit ? '#dc3545' : total > 0 ? '#000' : '#666',
                         fontWeight: 'bold',
                         border: isOverLimit ? '2px solid #dc3545' : 'none'
                       }}
                     >
-                      {total > 0 ? total.toFixed(1) : ''}
+                      {total > 0 ? (Number(total) || 0).toFixed(1) : ''}
                       {isOverLimit && <div style={{ fontSize: '10px', marginTop: '2px' }}>⚠</div>}
                     </td>
                   );
                 })}
                 <td style={{ textAlign: 'center', background: '#f0f0f0', fontWeight: 'bold' }}>
-                  {weekTotal.toFixed(1)}
+                  {(Number(weekTotal) || 0).toFixed(1)}
                 </td>
               </tr>
             </tbody>
@@ -942,12 +1198,17 @@ export default function EmployeeDashboard() {
         {/* Totale Ore e Pulsante Invia in Approvazione */}
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginTop: '20px', justifyContent: 'flex-end' }}>
           <div style={{ fontSize: '18px', fontWeight: 'bold', marginRight: '20px' }}>
-            Totale Ore: <span style={{ color: '#0070f3' }}>{weekTotal.toFixed(2)}</span>
+            Totale Ore: <span style={{ color: '#0070f3' }}>{(Number(weekTotal) || 0).toFixed(2)}</span>
           </div>
           {!isWeekApproved && (
             <button 
               className="btn btn-success" 
-              onClick={handleSaveAndSubmitWeek}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                console.log('Bottone cliccato. weekValidation.isValid:', weekValidation.isValid, 'loading:', loading);
+                handleSaveAndSubmitWeek();
+              }}
               disabled={loading || !weekValidation.isValid}
               title={!weekValidation.isValid ? 'Completa tutti i giorni con esattamente 8 ore per inviare' : ''}
             >
@@ -982,7 +1243,7 @@ export default function EmployeeDashboard() {
           </div>
         )}
 
-        {/* Messaggio di avviso settimana incompleta */}
+        {/* Messaggio di avviso settimana incompleta (solo giorni lavorativi) */}
         {!isWeekApproved && !weekValidation.isValid && (
           <div style={{ 
             padding: '10px 15px', 
@@ -994,7 +1255,7 @@ export default function EmployeeDashboard() {
             width: '100%',
             marginTop: '20px'
           }}>
-            <strong>⚠ Settimana incompleta:</strong> {weekValidation.incompleteDays.length} giorno/i non ha/hanno esattamente 8 ore.
+            <strong>⚠ Settimana incompleta:</strong> {weekValidation.incompleteDays.length} giorno/i lavorativo/i non ha/hanno esattamente 8 ore.
             <div style={{ marginTop: '5px', fontSize: '13px' }}>
               {weekValidation.incompleteDays.map((d, idx) => (
                 <span key={idx} style={{ marginRight: '15px' }}>
@@ -1002,9 +1263,127 @@ export default function EmployeeDashboard() {
                 </span>
               ))}
             </div>
+            <div style={{ marginTop: '5px', fontSize: '12px', color: '#666', fontStyle: 'italic' }}>
+              Nota: Sabato e domenica non sono considerati nella validazione.
+            </div>
           </div>
         )}
       </div>
+
+      {/* Modale di Conferma Generico */}
+      {showConfirmModal && confirmModalConfig && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }} onClick={() => {
+          setShowConfirmModal(false);
+          setConfirmModalConfig(null);
+        }}>
+          <div style={{
+            background: 'white',
+            padding: '30px',
+            borderRadius: '8px',
+            maxWidth: '500px',
+            width: '90%',
+            boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
+          }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0, marginBottom: '15px' }}>
+              {confirmModalConfig.title}
+            </h3>
+            <p style={{ marginBottom: '20px', fontSize: '16px' }}>
+              {confirmModalConfig.message}
+              {confirmModalConfig.title === 'Conferma Invio' && Object.keys(localChanges).length > 0 && (
+                <span style={{ display: 'block', marginTop: '10px', color: '#666', fontSize: '14px' }}>
+                  ({Object.keys(localChanges).length} modifiche da salvare)
+                </span>
+              )}
+            </p>
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  setShowConfirmModal(false);
+                  setConfirmModalConfig(null);
+                }}
+                disabled={loading}
+              >
+                {confirmModalConfig.cancelText || 'Annulla'}
+              </button>
+              <button
+                className={confirmModalConfig.title === 'Elimina Riga' ? 'btn btn-danger' : 'btn btn-success'}
+                onClick={() => {
+                  confirmModalConfig.onConfirm();
+                  setShowConfirmModal(false);
+                }}
+                disabled={loading}
+              >
+                {loading ? 'Elaborazione...' : (confirmModalConfig.confirmText || 'Conferma')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modale di Conferma per Invio Settimana (se non c'è già un modale generico aperto) */}
+      {showConfirmModal && !confirmModalConfig && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }} onClick={handleConfirmModalCancel}>
+          <div style={{
+            background: 'white',
+            padding: '30px',
+            borderRadius: '8px',
+            maxWidth: '500px',
+            width: '90%',
+            boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
+          }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0, marginBottom: '15px' }}>
+              Conferma Invio
+            </h3>
+            <p style={{ marginBottom: '20px', fontSize: '16px' }}>
+              Vuoi salvare e inviare in approvazione la settimana?
+              {Object.keys(localChanges).length > 0 && (
+                <span style={{ display: 'block', marginTop: '10px', color: '#666', fontSize: '14px' }}>
+                  ({Object.keys(localChanges).length} modifiche da salvare)
+                </span>
+              )}
+            </p>
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button
+                className="btn btn-secondary"
+                onClick={handleConfirmModalCancel}
+                disabled={loading}
+              >
+                Annulla
+              </button>
+              <button
+                className="btn btn-success"
+                onClick={handleConfirmModalConfirm}
+                disabled={loading}
+              >
+                {loading ? 'Salvataggio...' : 'Conferma'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

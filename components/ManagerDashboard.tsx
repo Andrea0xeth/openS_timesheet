@@ -34,9 +34,23 @@ function getMonday(date: Date): Date {
   return new Date(d.setDate(diff));
 }
 
-// Formatta data come YYYY-MM-DD
+// Formatta data come YYYY-MM-DD (usa valori locali per evitare problemi di timezone)
 function formatDate(date: Date): string {
-  return date.toISOString().split('T')[0];
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+// Ottieni i giorni della settimana (lunedì-domenica)
+function getWeekDays(monday: Date): Date[] {
+  const days: Date[] = [];
+  for (let i = 0; i < 7; i++) {
+    const day = new Date(monday);
+    day.setDate(day.getDate() + i);
+    days.push(day);
+  }
+  return days;
 }
 
 export default function ManagerDashboard() {
@@ -67,7 +81,7 @@ export default function ManagerDashboard() {
   // Form states
   const [projectForm, setProjectForm] = useState({ nome: '', descrizione: '', data_inizio: '', data_fine: '', stato: 'attivo' });
   const [commessaForm, setCommessaForm] = useState({ project_id: '', nome: '', descrizione: '', budget_ore: '', stato: 'attiva' });
-  const [employeeForm, setEmployeeForm] = useState({ nome: '', cognome: '', username: '', password: '', ruolo: 'dipendente' });
+  const [employeeForm, setEmployeeForm] = useState<Omit<Employee, 'id'>>({ nome: '', cognome: '', username: '', password: '', ruolo: 'dipendente' });
 
   useEffect(() => {
     loadData();
@@ -338,6 +352,86 @@ export default function ManagerDashboard() {
     );
   };
 
+  // Organizza timesheet in righe per progetto/commessa (per visualizzazione tabellare)
+  const organizeTimesheetsForWeek = (weekTimesheets: Timesheet[]) => {
+    interface TimesheetRow {
+      id: string;
+      project_id: number;
+      commessa_id: number;
+      project_name: string;
+      commessa_name: string;
+      days: { [date: string]: { timesheetId?: number; ore: number; descrizione: string } };
+      total: number;
+    }
+
+    const weekStart = weekTimesheets.length > 0 ? getMonday(new Date(weekTimesheets[0].data)) : getMonday(new Date());
+    const weekDays = getWeekDays(weekStart);
+    
+    // Inizializza giorni della settimana
+    const daysMap: { [date: string]: { timesheetId?: number; ore: number; descrizione: string } } = {};
+    weekDays.forEach(day => {
+      daysMap[formatDate(day)] = { ore: 0, descrizione: '' };
+    });
+
+    const rowsMap: { [key: string]: TimesheetRow } = {};
+
+    // Raggruppa timesheet per progetto/commessa
+    weekTimesheets.forEach(ts => {
+      // Gestisci stringhe nel formato YYYY-MM-DD come date locali (non UTC)
+      let tsDate: Date;
+      if (typeof ts.data === 'string') {
+        const dateStr = ts.data.trim();
+        if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+          // Formato YYYY-MM-DD: crea data in timezone locale
+          const [year, month, day] = dateStr.split('-').map(Number);
+          tsDate = new Date(year, month - 1, day);
+        } else {
+          tsDate = new Date(dateStr);
+        }
+      } else {
+        tsDate = new Date(ts.data);
+      }
+      
+      if (isNaN(tsDate.getTime())) {
+        return;
+      }
+      
+      const tsDateStr = formatDate(tsDate);
+      const key = `${ts.project_id}_${ts.commessa_id}`;
+      
+      if (!rowsMap[key]) {
+        const project = projects.find(p => p.id === ts.project_id);
+        const commessa = commesse.find(c => c.id === ts.commessa_id);
+        
+        rowsMap[key] = {
+          id: key,
+          project_id: ts.project_id,
+          commessa_id: ts.commessa_id,
+          project_name: project?.nome || '',
+          commessa_name: commessa?.nome || '',
+          days: JSON.parse(JSON.stringify(daysMap)),
+          total: 0
+        };
+      }
+      
+      rowsMap[key].days[tsDateStr] = {
+        timesheetId: ts.id,
+        ore: Number(ts.ore) || 0,
+        descrizione: ts.descrizione || ''
+      };
+    });
+
+    // Calcola totali
+    Object.values(rowsMap).forEach(row => {
+      row.total = Object.values(row.days).reduce((sum, day) => sum + (Number(day.ore) || 0), 0);
+    });
+
+    return {
+      rows: Object.values(rowsMap),
+      weekDays: weekDays
+    };
+  };
+
   const openProjectModal = (project?: Project) => {
     if (project) {
       setEditingProject(project);
@@ -473,6 +567,15 @@ export default function ManagerDashboard() {
                   const weekTotal = week.timesheets.reduce((sum, ts) => sum + (Number(ts.ore) || 0), 0);
                   const weekStartStr = formatDate(week.weekStart);
                   const weekEndStr = formatDate(week.weekEnd);
+                  const organized = organizeTimesheetsForWeek(week.timesheets);
+                  const weekDays = organized.weekDays;
+                  const rows = organized.rows;
+                  
+                  // Calcola totali giornalieri
+                  const dayTotals = weekDays.map(day => {
+                    const dateKey = formatDate(day);
+                    return rows.reduce((sum, row) => sum + (Number(row.days[dateKey]?.ore) || 0), 0);
+                  });
                   
                   return (
                     <div key={idx} style={{ 
@@ -501,32 +604,81 @@ export default function ManagerDashboard() {
                         </div>
                       </div>
 
-                      <div style={{ marginBottom: '15px' }}>
-                        <table className="table" style={{ fontSize: '13px' }}>
+                      {/* Tabella Timesheet in formato settimanale */}
+                      <div style={{ marginBottom: '15px', overflowX: 'auto' }}>
+                        <table className="table" style={{ minWidth: '800px', fontSize: '13px' }}>
                           <thead>
                             <tr>
-                              <th>Data</th>
-                              <th>Progetto</th>
-                              <th>Commessa</th>
-                              <th>Ore</th>
-                              <th>Descrizione</th>
+                              <th style={{ minWidth: '200px' }}>Progetto</th>
+                              <th style={{ minWidth: '200px' }}>Commessa</th>
+                              {weekDays.map((day, dayIdx) => (
+                                <th key={dayIdx} style={{ textAlign: 'center', minWidth: '80px' }}>
+                                  <div>{day.toLocaleDateString('it-IT', { weekday: 'short' })}</div>
+                                  <div style={{ fontSize: '11px', color: '#666' }}>
+                                    {day.getDate()}/{day.getMonth() + 1}
+                                  </div>
+                                </th>
+                              ))}
+                              <th style={{ textAlign: 'center', minWidth: '80px', background: '#f8f9fa' }}>Tot.</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {week.timesheets.map(ts => {
-                              const project = projects.find(p => p.id === ts.project_id);
-                              const commessa = commesse.find(c => c.id === ts.commessa_id);
-                              
-                              return (
-                                <tr key={ts.id}>
-                                  <td>{new Date(ts.data).toLocaleDateString('it-IT')}</td>
-                                  <td>{project?.nome || '-'}</td>
-                                  <td>{commessa?.nome || '-'}</td>
-                                  <td>{ts.ore}</td>
-                                  <td>{ts.descrizione || '-'}</td>
-                                </tr>
-                              );
-                            })}
+                            {rows.map((row, rowIdx) => (
+                              <tr key={rowIdx}>
+                                <td style={{ fontWeight: '500' }}>{row.project_name || '-'}</td>
+                                <td>{row.commessa_name || '-'}</td>
+                                {weekDays.map((day, dayIdx) => {
+                                  const dateKey = formatDate(day);
+                                  const cell = row.days[dateKey];
+                                  const ore = Number(cell?.ore) || 0;
+                                  
+                                  return (
+                                    <td key={dayIdx} style={{ textAlign: 'center', padding: '8px' }}>
+                                      {ore > 0 ? (
+                                        <div style={{
+                                          background: '#e3f2fd',
+                                          borderRadius: '3px',
+                                          padding: '5px',
+                                          fontWeight: '500'
+                                        }}>
+                                          {ore.toFixed(1)}
+                                        </div>
+                                      ) : (
+                                        <div style={{ color: '#ccc' }}>-</div>
+                                      )}
+                                    </td>
+                                  );
+                                })}
+                                <td style={{ textAlign: 'center', fontWeight: 'bold', background: '#f8f9fa' }}>
+                                  {(Number(row.total) || 0).toFixed(1)}
+                                </td>
+                              </tr>
+                            ))}
+                            {/* Riga totali giornalieri */}
+                            <tr style={{ background: '#f0f0f0', fontWeight: 'bold' }}>
+                              <td colSpan={2} style={{ textAlign: 'right', paddingRight: '10px' }}>
+                                Totale Giornaliero:
+                              </td>
+                              {dayTotals.map((total, dayIdx) => (
+                                <td key={dayIdx} style={{ textAlign: 'center', padding: '8px' }}>
+                                  {total > 0 ? (
+                                    <div style={{
+                                      background: total === 8 ? '#c8e6c9' : total > 8 ? '#ffcdd2' : '#fff9c4',
+                                      borderRadius: '3px',
+                                      padding: '5px',
+                                      color: total === 8 ? '#2e7d32' : total > 8 ? '#c62828' : '#f57f17'
+                                    }}>
+                                      {total.toFixed(1)}
+                                    </div>
+                                  ) : (
+                                    <div style={{ color: '#ccc' }}>-</div>
+                                  )}
+                                </td>
+                              ))}
+                              <td style={{ textAlign: 'center', background: '#e0e0e0' }}>
+                                {(Number(weekTotal) || 0).toFixed(1)}
+                              </td>
+                            </tr>
                           </tbody>
                         </table>
                       </div>
